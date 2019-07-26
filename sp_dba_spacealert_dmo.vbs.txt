@@ -1,0 +1,127 @@
+This vbscript is used to alert and email receipients on Filegroup space usage
+Ouput:  '% Space Avail. , Space Avail. Filesize, MaxSize, FileName, DBname, FileGroup
+The process takes three arguments - SqlserverName ,
+Threshold for percentage of available space to check ,
+Mininum MaxFileSize to check
+Execute the script either from the command line or schedule the script via Sql Server Agent
+Command line execution:  cscript.exe sp_dba_spacealert_dmo.vbs sqlservername Threshold MaxfileSize
+Sql server agent : cscript sp_dba_spacealert_dmo.vbs  sqlservername Threshold MaxfileSize
+The process uses sqlmail which can be installed on any server within your organization 
+
+
+
+
+
+'############################### sp_dba_spacealert_dmo.vbs ############################
+' Submitted by Jim Mccoy  Divermack@yahoo.com
+'This vbscript is used to alert and email receipients on Filegroup space usage
+'Ouput:  '% Space Avail. , Space Avail. Filesize, MaxSize, FileName, DBname, FileGroup
+'The process takes three arguments - SqlserverName , 
+'Threshold for percentage of available space to check ,
+'Mininum MaxFileSize to check
+'Execute the script either from the command line or schedule the script via Sql Server Agent
+'Command line execution:  cscript.exe sp_dba_spacealert_dmo.vbs sqlservername Threshold MaxfileSize
+'Sql server agent : cscript sp_dba_spacealert_dmo.vbs  sqlservername Threshold MaxfileSize
+'The process uses sqlmail which can be installed on any server within your organization
+'######################################################################################
+Dim oServer,oDatabase
+Dim oDBgrp,oDBfgrp
+Dim sResults,oDBfile 
+Dim oDbfil,sDBfil
+Dim SpAlert,Checksize
+
+Dim sFgn,sDBfs
+
+Dim oArgs, fso, drv
+Dim command, recordset, connDb 
+Nosend = False
+
+				'Constants used for the sendmail proc
+Const sServer = "SSSSSSS"                  ' Name of server where Sqlmail is installed
+Const sUser = "UUUUU"                      ' Sqlmail userid
+Const sPassword = "PPPPPP"                 ' Sqlmail password 
+Const sDatabase = "master"
+Const messageto = "NNNNNN@company.com"     ' Mail recipient 
+Const ccto = "NNNNNN@comapny.com"          ' cc Mail recipient 
+			' multiple addresses delimited by semicolon
+Const width = "200"
+
+ 'Arguments for Sqlserver ,  Threshold  , MaxFileSizeCheck
+ 
+ Sqlserver = WScript.Arguments.Item(0)
+ Threshold = CInt(WScript.Arguments.Item(1))
+ MaxCheck = CInt(WScript.Arguments.Item(2))
+ 
+Set oServer = CreateObject("SQLDmo.SqlServer") 
+ 
+oServer.LoginSecure = True 
+ 
+oServer.Connect Sqlserver 
+ 
+' This will return the name of each database along with the % space avail.
+' space avail,  Filesize, MaxFileSize, FileName, DBName and FileGroup 
+
+For Each oDatabase In oServer.Databases 
+  Set oDBgrp = oDatabase
+  Set oDBfgrp = oDBgrp.Filegroups
+	for each sDBfs in oDBfgrp
+	   Next
+	    for each oDBfil in oDBfgrp
+	     sFgn = oDBfil.name
+	        for each sDBfil in oDBfil.DBFiles 
+		SpAlert = Round((sDBfil.SpaceAvailableInMB/sDBfil.Size)* 100)
+		Checksize = Round(sDBfil.MaximumSize - sDBfil.Size)             ' Check to see if the filesize is approaching  maxfilesize
+		'  If you want to exclude primary filegroups
+		'If SpAlert < Threshold and  sDBfil.MaximumSize > -1 and sFgn <> "PRIMARY" and Checksize < MaxCheck then
+		
+		'  If you want to include primary filegroups
+		If SpAlert < Threshold and  sDBfil.MaximumSize > -1  and Checksize < MaxCheck then
+		
+		'Displays % space avail. , Space avail. Filesize, MaxSize, FileName, DBname, FileGroup
+		sTitle = "%SpAvl - SpAvl(mb) - Fsize - Msize - Fname - DB - FGN And MaxFsize < " & MaxCheck & "MB"
+		sResults = sResults & sTitle & Chr(13) & "    " & SpAlert & "%" &" - "& sDBfil.SpaceAvailableInMB & "MB" &" - "& sDBfil.Size & "MB" & " - " & sDBfil.MaximumSize & "MB" & " - " & sDBfil.Name & " - " & oDatabase.name & " - " & sFgn  &  Chr(13) 
+		  If IsEmpty(sResults) = False  then 
+		     Nosend = True
+			 End If
+		End If
+	    Next
+	Next
+Next 
+
+
+
+sConnect = "driver={SQL Server};server=SSSSSSS" + ";uid=" + _
+		sUser + ";pwd=" + sPassword + ";database=" + sDatabase
+messagebody = sResults 
+
+messagesubject = "Space Alert For: " & Sqlserver & " " & Now
+	
+Set command = WScript.CreateObject("ADODB.Command")
+command.Activeconnection = sConnect
+
+
+
+If Nosend = True Then		' Don't send email if there's nothing to report on
+command.CommandText = _
+"EXEC master.dbo.xp_sendmail @recipients = '" + messageto + _
+	"',@copy_recipients = '" + ccto + _
+	"',@subject = '" + messagesubject + _
+	"',@message = '" + messagebody + _
+	"', @width = " + width
+	Set recordset = command.Execute()
+End If	
+
+   
+'Uncomment to display results in MsgBox  at terminal
+
+'MsgBox  sResults 
+
+  
+oServer.DisConnect 
+' Clean up
+Set oServer = Nothing 
+Set recordset = nothing
+Set connDb  = nothing
+Set command = nothing
+Set recordset = nothing
+

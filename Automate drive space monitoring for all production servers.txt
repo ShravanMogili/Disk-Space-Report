@@ -1,0 +1,429 @@
+Automate drive space monitoring for all production servers
+
+
+
+Monitoring space in production server is one of the top priority tasks for a DBA. But when the number of servers to monitor increases, it becomes difficult to do that. These scripts will do the job for you. It will collect free space information from all the servers and send it to your mail. Here are the necessary steps to do it.
+
+    Create linked server to all the production servers and store the information in a table (DBA_ALL_SERVERS)
+    Create a table for drive space in servers (DBA_ALL_SERVER_SPACE)
+    Create the procedure which loop through the server lists and checks drive space in each of them and store it to the table DBA_ALL_SERVER_SPACE
+    Put the procedure in a job and schedule it accordingly
+
+Before taking advantage of this script, you need to configure DB Mail, and create linked servers for the servers. Use BOL in case of any doubts regarding this
+Once you are ready
+1) Create the Servers table
+
+ 
+
+CREATE TABLE [dbo].[DBA_All_servers](
+[Servername] [sysname] NOT NULL,
+[Description] [varchar](50) NULL,
+[Status] [int] NULL,
+[Version] [varchar](10) NULL
+)
+
+ 
+
+
+Now go ahead and populate your linked servers into the table. All the columns other than server name don't have significance at present. However I have created it for any future use.
+
+2) Create the Space table
+
+ 
+
+CREATE TABLE [dbo].[DBA_All_Server_Space](
+[DRIVE] [char](1) NULL,
+[FREE_SPACE_IN_MB] [int] NULL,
+[SERVER_NAME] [varchar](20) NULL
+)
+
+3) Create the procedure
+
+CREATE PROCEDURE [DBO].[USP_DBA_GETSERVERSPACE]
+
+AS BEGIN
+TRUNCATE TABLE DBA_ALL_SERVER_SPACE
+
+CREATE TABLE #TEMPSPACE
+(
+DRIVE VARCHAR(20),
+SPACE INT
+)
+
+DECLARE @SERVER_NAME VARCHAR(200)
+
+--** PUT LOCAL SERVER FIRST.
+
+INSERT INTO #TEMPSPACE
+EXEC XP_FIXEDDRIVES
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT *,@@SERVERNAME AS SERVERNAME FROM #TEMPSPACE
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT NULL,NULL,NULL
+
+ 
+
+PRINT @@SERVERNAME +' COMPLETED.'
+
+DECLARE ALLSERVER CURSOR
+FOR
+SELECT SERVERNAME FROM DBADATA.DBO.DBA_ALL_SERVERS
+OPEN ALLSERVER
+FETCH NEXT FROM ALLSERVER INTO @SERVER_NAME
+
+WHILE @@FETCH_STATUS=0
+BEGIN
+TRUNCATE TABLE #TEMPSPACE
+
+ 
+
+EXEC ('INSERT INTO #TEMPSPACE
+EXEC ' + @SERVER_NAME+'.MASTER.DBO.XP_FIXEDDRIVES')
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT *,@SERVER_NAME AS SERVERNAME FROM #TEMPSPACE
+
+/* Optionally insert a blank line. This was added
+later for readability of the email */
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT NULL,NULL,NULL
+
+PRINT 'SERVER ' +@SERVER_NAME+' COMPLETED.'
+
+FETCH NEXT FROM ALLSERVER INTO @SERVER_NAME
+END
+CLOSE ALLSERVER
+DEALLOCATE ALLSERVER
+DROP TABLE #TEMPSPACE
+----------------------------------------------------
+-- May be its time to send the report to my DBA
+
+DECLARE @SERVERNAME VARCHAR(200)
+DECLARE @DRIVE VARCHAR(200)
+DECLARE @SPACE VARCHAR(200)
+
+DECLARE SPACECUR CURSOR FOR
+SELECT SERVER_NAME,DRIVE, FREE_SPACE_IN_MB FROM [DBA_ALL_SERVER_SPACE]
+
+OPEN SPACECUR
+
+FETCH NEXT FROM SPACECUR
+INTO @SERVERNAME,@DRIVE,@SPACE
+
+DECLARE @BODY1 VARCHAR(2000)
+SET @BODY1= 'FOLLOWING ARE SPACE INFO FOR PROD SERVERS: '+ CHAR(13)+
+'SERVER'+CHAR(9)+
+'DRIVE'+CHAR(9)+
+'SPACE'+CHAR(13)
+
+ 
+
+WHILE @@FETCH_STATUS=0
+BEGIN
+SET @BODY1= @BODY1 +
+ISNULL(@SERVERNAME,'')+CHAR(9)+
+ISNULL(@DRIVE,'')+CHAR(9)+
+ISNULL(@SPACE,'')+CHAR(13)
+FETCH NEXT FROM SPACECUR
+INTO @SERVERNAME,@DRIVE,@SPACE
+END
+CLOSE SPACECUR
+DEALLOCATE SPACECUR
+
+ 
+
+EXEC MSDB.DBO.SP_SEND_DBMAIL @RECIPIENTS='<YourEmailID>',
+@SUBJECT = 'SERVER :NMR\BATS PROD SERVER SPACE INFO ',
+@BODY = @BODY1,
+@BODY_FORMAT = 'TEXT' ,@PROFILE_NAME='<YourDBMailProfile>';
+
+-------------------------------------------------------
+
+ 
+
+END
+
+ 
+
+
+That's it. Now schedule the Procedure in a Job to send you report whenever you need them, twice a day, thrice a day or whatever.
+---------------------------------------------------------------------------------------------------------
+
+Note: insert into Exec may not work if distributed transaction is not configured. Now there is a workaround for this. You need to create a stored procedure in the remote server to store the result into a local table and then copy it to our central table
+
+Remember to run the following in all servers
+
+
+Eg
+
+USE [MASTER]
+CREATE TABLE [DBO].[TEMPSPACE](
+[DRIVE] [VARCHAR](20) NULL,
+[SPACE] [INT] NULL
+) ON [PRIMARY]
+
+ 
+
+CREATE PROC [DBO].[USP_TEMPSPACE_POP]
+AS BEGIN
+TRUNCATE TABLE TEMPSPACE
+INSERT INTO TEMPSPACE
+EXEC XP_FIXEDDRIVES
+END
+
+ 
+
+
+In the procedure change the While loop as
+
+ 
+
+ 
+
+WHILE @@FETCH_STATUS=0
+BEGIN
+TRUNCATE TABLE #TEMPSPACE
+
+ 
+
+ 
+
+EXEC ('EXEC ' + @SERVER_NAME+'.MASTER.DBO.USP_TEMPSPACE_POP')
+EXEC ('INSERT INTO #TEMPSPACE SELECT * FROM ' + @SERVER_NAME+'.MASTER.DBO.tempSpace')
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT *,@SERVER_NAME AS SERVERNAME FROM #TEMPSPACE
+
+/* Optionally insert a blank line. This was added
+later for readability of the email */
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT NULL,NULL,NULL
+
+PRINT 'SERVER ' +@SERVER_NAME+' COMPLETED.'
+
+FETCH NEXT FROM ALLSERVER INTO @SERVER_NAME
+END
+
+
+
+*****************************************************************************************************************************************************************************************************
+
+
+
+
+
+USE MASTER 
+GO
+
+
+CREATE TABLE
+[dbo].[DBA_All_servers](
+      [Servername] [sysname] NOT NULL,
+      [Description] [varchar](50) NULL,
+      [Status] [int] NULL,
+      [Version] [varchar](10) NULL
+)
+
+GO
+CREATE TABLE
+[dbo].[DBA_All_Server_Space](
+      [DRIVE] [char](1) NULL,
+      [FREE_SPACE_IN_MB] [int] NULL,
+      [SERVER_NAME] [varchar](20) NULL
+)
+
+GO
+
+
+CREATE PROCEDURE
+[DBO].[USP_DBA_GETSERVERSPACE]
+
+AS BEGIN
+TRUNCATE TABLE DBA_ALL_SERVER_SPACE
+
+CREATE TABLE
+#TEMPSPACE
+(
+DRIVE VARCHAR(20),
+SPACE INT
+)
+
+DECLARE @SERVER_NAME VARCHAR(200)
+--** PUT LOCAL SERVER FIRST.
+
+INSERT INTO #TEMPSPACE
+EXEC XP_FIXEDDRIVES
+
+ 
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT *,@@SERVERNAME AS
+SERVERNAME FROM #TEMPSPACE
+
+ 
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT NULL,NULL,NULL
+
+ 
+PRINT @@SERVERNAME +' COMPLETED.'
+
+ 
+
+DECLARE ALLSERVER CURSOR FOR 
+SELECT SERVERNAME FROM DBADATA.DBO.DBA_ALL_SERVERS
+
+OPEN ALLSERVER
+
+FETCH NEXT FROM ALLSERVER INTO @SERVER_NAME
+
+ 
+WHILE @@FETCH_STATUS=0  
+BEGIN
+TRUNCATE TABLE #TEMPSPACE
+ 
+
+EXEC ('INSERT INTO #TEMPSPACE  EXEC ' +
+@SERVER_NAME+'.MASTER.DBO.XP_FIXEDDRIVES')
+ 
+
+INSERT INTO DBA_ALL_SERVER_SPACE 
+SELECT *,@SERVER_NAME AS SERVERNAME FROM
+#TEMPSPACE
+
+ 
+
+/* Optionally
+insert a blank line. This was added
+
+later for
+readability of the email */
+
+ 
+
+INSERT INTO DBA_ALL_SERVER_SPACE
+SELECT NULL,NULL,NULL
+
+ 
+
+PRINT 'SERVER ' +@SERVER_NAME+' COMPLETED.'
+
+ 
+
+FETCH NEXT FROM ALLSERVER INTO @SERVER_NAME
+
+END
+
+CLOSE ALLSERVER
+DEALLOCATE ALLSERVER
+DROP TABLE #TEMPSPACE
+
+----------------------------------------------------
+
+-- May be its time to send the report to my DBA
+
+ 
+
+DECLARE @SERVERNAME VARCHAR(200)
+DECLARE @DRIVE VARCHAR(200)
+DECLARE @SPACE VARCHAR(200)
+
+ 
+
+DECLARE SPACECUR CURSOR FOR
+SELECT SERVER_NAME,DRIVE, FREE_SPACE_IN_MB
+FROM [DBA_ALL_SERVER_SPACE]
+
+OPEN SPACECUR
+
+FETCH NEXT FROM SPACECUR INTO @SERVERNAME,@DRIVE,@SPACE
+
+ 
+DECLARE @BODY1 VARCHAR(2000)
+
+SET @BODY1= 'FOLLOWING ARE SPACE INFO
+FOR PROD SERVERS: '+ CHAR(13)+
+'SERVER'+CHAR(9)+
+'DRIVE'+CHAR(9)+
+'SPACE'+CHAR(13)
+
+WHILE @@FETCH_STATUS=0
+
+BEGIN
+SET @BODY1= @BODY1 +
+ISNULL(@SERVERNAME,'')+CHAR(9)+
+ISNULL(@DRIVE,'')+CHAR(9)+
+ISNULL(@SPACE,'')+CHAR(13)
+
+FETCH NEXT
+FROM SPACECUR INTO @SERVERNAME,@DRIVE,@SPACE
+
+END
+
+CLOSE SPACECUR
+DEALLOCATE SPACECUR
+ 
+EXEC MSDB.DBO.SP_SEND_DBMAIL @RECIPIENTS='<YourEmailID>',
+@SUBJECT = 'SERVER :NMR\BATS PROD
+SERVER SPACE INFO ', 
+@BODY = @BODY1, 
+@BODY_FORMAT = 'TEXT' ,@PROFILE_NAME='<YourDBMailProfile>';
+
+ 
+
+-------------------------------------------------------
+
+ 
+
+ 
+
+END
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
